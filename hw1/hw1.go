@@ -1,19 +1,26 @@
 package main
 
-import "fmt"
-import "os"
-import "bufio"
+import (
+  "fmt"
+  "os"
+  "bufio"
+  "container/list"
+  "errors"
+)
 
 type Actor struct {
   name string
   score int
   movies []*Movie
+  linkedBy *Movie
+  inQueue bool
 }
 
 type Movie struct {
   name string
   score int
   cast []*Actor
+  lowestScorer *Actor
 }
 
 // ask user for actor name
@@ -51,7 +58,7 @@ func processCastFile(
     var curActor *Actor
     if newLine {
       // add line as movie
-      curMovie = &Movie{name: line, cast: []*Actor{}}
+      curMovie = &Movie{name: line, score: -1}
       movies[line] = curMovie
       newLine = false
     } else {
@@ -63,7 +70,7 @@ func processCastFile(
         curActor.movies = append(curActor.movies, curMovie)
       } else {
         // add actor to actors map
-        curActor = &Actor{name: line, movies: []*Movie{curMovie}}
+        curActor = &Actor{name: line, score: -1, movies: []*Movie{curMovie}}
         actors[line] = curActor
       }
       // add actor to cast in current movie
@@ -74,28 +81,117 @@ func processCastFile(
   return nil
 }
 
+func score(actorQ *list.List) {
+  for actorQ.Len() != 0 {
+    // deque actor
+    elem := actorQ.Front()
+    actorQ.Remove(elem)
+    actor := elem.Value.(*Actor)
+    actor.inQueue = false
+
+    // score all of actor's movies
+    // scoreing movies adds move actors to queue
+    for _, movie := range actor.movies {
+      scoreMovie(movie, actor, actorQ)
+    }
+  }
+}
+
+// update score of movies for a given actor (scorer)
+func scoreMovie(movie *Movie, scorer *Actor, actorQ *list.List) {
+  // if no score, score
+  if movie.score == -1 {
+    movie.score = 1 + scorer.score
+    movie.lowestScorer = scorer
+    // update score of all actors and add to queue
+    for _, actor := range movie.cast {
+      scoreActor(movie, actor, actorQ)
+    }
+  } else if movie.score - 1 > scorer.score {
+    // update score if better
+    movie.score = scorer.score + 1
+    movie.lowestScorer = scorer
+    // update score of all actors and add to queue
+    for _, actor := range movie.cast {
+      scoreActor(movie, actor, actorQ)
+    }
+
+  }
+}
+
+// update actors score based on movie (scorer)
+func scoreActor(scorer *Movie, actor *Actor, actorQ *list.List) {
+  // if no score, update
+  if actor.score == -1 {
+    actor.score = scorer.score
+    actor.linkedBy = scorer
+    // add to queue
+    if actor.inQueue == false {
+      actorQ.PushBack(actor)
+      actor.inQueue = true
+    }
+  } else if scorer.score < actor.score {
+    // if movie score less than ours, update
+    actor.score = scorer.score
+    actor.linkedBy = scorer
+    // add to queue
+    if actor.inQueue == false {
+      actorQ.PushBack(actor)
+      actor.inQueue = true
+    }
+
+  }
+}
+
+func lookup(name string, actors map[string]*Actor) (*Actor, error) {
+  if _, ok := actors[name]; ok {
+    return actors[name], nil
+  } else {
+    return nil, errors.New("Unknown actor name")
+  }
+}
+
+func displayScore(actor *Actor) {
+  if actor.score == -1 {
+    fmt.Println("Infinite KBN\n")
+    return
+  }
+
+  curr := actor
+  for curr.linkedBy != nil {
+    movie := curr.linkedBy
+    fmt.Println(curr.name, "was in", movie.name, "with", movie.lowestScorer.name)
+    curr = movie.lowestScorer
+  }
+
+  fmt.Println("Found with KBN of", actor.score, "\n")
+}
 
 func main() {
   movies := map[string]*Movie{}
   actors := map[string]*Actor{}
   processCastFile("cast.txt", movies, actors)
 
-  /*
-  for _, movie := range movies {
-    fmt.Println(movie.name)
-    fmt.Println("\tcast:")
-    for _, actor := range movie.cast {
-      fmt.Println("\t\t", actor.name)
-    }
-  }
+  // set all scores
+  kevin := actors["Kevin Bacon"]
+  kevin.score = 0
+  queue := list.New()
+  queue.PushBack(kevin)
+  score(queue)
 
-  for _, actor := range actors {
-    fmt.Println(actor.name)
-    fmt.Println("\tfeatured in:")
-    for _, movie := range actor.movies {
-      fmt.Println("\t\t", movie.name)
+  for {
+    // get name from stdin
+    if name, err := getName(); err != nil {
+      fmt.Println(err)
+    } else {
+      // lookup actor
+      if name == "" { return }
+      if actor, err := lookup(name, actors); err != nil {
+        fmt.Println(err)
+      } else {
+        // display score
+        displayScore(actor)
+      }
     }
   }
-  */
 }
-
