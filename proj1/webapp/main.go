@@ -12,6 +12,12 @@ the value is the url we wish to redirect to
 */
 var urls = make(map[string]string)
 
+/*
+function for index page (/)
+returns: current short urls and mapped redirect url
+         links to edit or delete
+         form to add new short url
+*/
 func index(ctx iris.Context) {
   // Bind: {{.urls}} with url list
   ctx.ViewData("urls", urls)
@@ -19,6 +25,13 @@ func index(ctx iris.Context) {
   ctx.View("index.html")
 }
 
+/*
+function for add endpoint (/add/{shortUrl}?shortUrl=&redirect=)
+this endpoint is ususally hit by the form in the index page
+query param shortUrl: short url to add to map
+query param redirect: redirect url to be associated w/ short url
+return: renders success / fail message
+*/
 func add(ctx iris.Context) {
   shortUrl := ctx.URLParam("shortUrl")
   redirect := ctx.URLParam("redirect")
@@ -40,6 +53,10 @@ func add(ctx iris.Context) {
   ctx.View("message.html")
 }
 
+/*
+function for delete endpoint (/delete/{shortUrl})
+return: renders success or fail message
+*/
 func del(ctx iris.Context) {
   var message string
   shortUrl := ctx.Params().Get("shortUrl")
@@ -55,6 +72,10 @@ func del(ctx iris.Context) {
   ctx.View("message.html")
 }
 
+/*
+function for edit route (/edit/{shortUrl})
+return: renders edit html containing form to update info or error message
+*/
 func edit(ctx iris.Context) {
   shortUrl := ctx.Params().Get("shortUrl")
   if redirect, ok := urls[shortUrl]; ok {
@@ -70,6 +91,14 @@ func edit(ctx iris.Context) {
   }
 }
 
+/*
+update route (/update/{shortUrl}?shortUrl=&redirect=)
+updates key and value in url map based on query parameters
+this route is usually hit from the form in the edit endpoint
+query param shortUrl: new key in url map
+query param redirect: new redirect value in url map
+return: renders success or fail message
+*/
 func update(ctx iris.Context) {
   var message string
   shortUrl := ctx.Params().Get("shortUrl")
@@ -100,6 +129,10 @@ func update(ctx iris.Context) {
   }
 }
 
+/*
+function for short url endpoints (/{shortUrl})
+used for redirecting
+*/
 func redirect(ctx iris.Context) {
   shortUrl := ctx.Params().Get("shortUrl")
   if redirect, ok := urls[shortUrl]; ok {
@@ -113,30 +146,36 @@ func redirect(ctx iris.Context) {
   }
 }
 
+/*
+main func sets up webapp and listens for incoming http connections
+*/
 func main() {
-    //hardcode some initial data
-    urls["tandon"] = "https://engineering.nyu.edu/"
-    urls["classes"] = "https://classes.nyu.edu/"
-    app := iris.New()
+  //hardcode some initial data
+  urls["tandon"] = "engineering.nyu.edu/"
+  urls["classes"] = "classes.nyu.edu/"
+  app := iris.New()
 
-    tmpl := iris.HTML("./views", ".html")
+  tmpl := iris.HTML("./views", ".html")
 
-    // Enable re-build on local template files changes.
-    tmpl.Reload(true)
+  // Enable re-build on local template files changes.
+  //tmpl.Reload(true)
 
-    // Register the view engine to the views,
-    // this will load the templates.
-    app.RegisterView(tmpl)
+  // Register the view engine to the views,
+  // this will load the templates.
+  app.RegisterView(tmpl)
 
-    // add all our routes
-    app.Get("/", index)
-    app.Get("/add", add)
-    app.Get("/edit/{shortUrl}", edit)
-    app.Get("/update/{shortUrl}", update)
-    app.Get("/delete/{shortUrl}", del)
-    app.Get("/{shortUrl}", redirect)
+  // add all our routes
+  app.Get("/", index)
+  app.Get("/add", add)
+  app.Get("/edit/{shortUrl}", edit)
+  app.Get("/update/{shortUrl}", update)
+  app.Get("/delete/{shortUrl}", del)
+  app.Get("/{shortUrl}", redirect)
 
-    // listen on port
-    // TODO command line port
+  // listen on provided port, default 8080.
+  if len(os.Args) == 1 {
     app.Listen(":8080")
+  } else {
+    app.Listen(":"+os.Args[1])
+  }
 }
