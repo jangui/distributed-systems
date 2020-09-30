@@ -151,8 +151,8 @@ main func sets up webapp and listens for incoming http connections
 */
 func main() {
   //hardcode some initial data
-  urls["tandon"] = "engineering.nyu.edu/"
-  urls["classes"] = "classes.nyu.edu/"
+  urls["tandon"] = "https://engineering.nyu.edu/"
+  urls["classes"] = "https://classes.nyu.edu/"
   app := iris.New()
 
   tmpl := iris.HTML("./views", ".html")
