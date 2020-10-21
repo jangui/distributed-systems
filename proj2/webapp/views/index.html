@@ -1,0 +1,30 @@
+<html>
+  <head>
+    <title>Url Shortener</title>
+  </head>
+  <body>
+    <h1>Url Shortener</h1>
+    <table>
+      <tr>
+        <th>edit</th>
+        <th>short url</th>
+        <th>redirect url</th>
+        <th>delete</th>
+      </tr>
+      {{ range $key, $value := .urls }}
+      <tr>
+        <td><a href="/edit/{{ $key }}">edit</a></td>
+        <td>{{ $key }}</td>
+        <td><a href="{{ $value }}">{{ $value }}</a></td>
+        <td><a href="/delete/{{ $key }}">delete</a></td>
+      </tr>
+      {{ end }}
+    </table>
+    <br><br>
+    <form action="/add">
+      <input type="text" name="shortUrl" placeholder="short url"><br>
+      <input type="text" name="redirect" placeholder="redirect url"><br><br>
+      <input type="submit" value="add">
+    </form>
+  </body>
+</html>
