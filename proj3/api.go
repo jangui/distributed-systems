@@ -3,6 +3,8 @@ package main
 import (
   "github.com/kataras/iris/v12"
   "flag"
+  "sync"
+  "fmt"
 )
 
 // struct used when sending json data
@@ -12,11 +14,18 @@ type Response struct {
 }
 
 /*
-global map variable containing data for our CRUD app
-the key is the name of shortened url
-the value is the url we wish to redirect to
+struct containing data for our CRUD app
+urls: the key is the name of shortened url
+    the value is the url we wish to redirect to
+lock: read write lock for thread safety
 */
-var urls = make(map[string]string)
+type Data struct {
+    urls map[string]string
+    lock sync.RWMutex
+}
+
+var data = Data{}
+
 
 /*
 function for add endpoint (/add?shortUrl=<shortUrl>&redirect=<redirect>)
@@ -36,11 +45,16 @@ func add(ctx iris.Context) {
         message = "no redirect url provided"
         status = 1
     } else {
-        if _, ok := urls[shortUrl]; ok {
+        data.lock.RLock()
+        if _, ok := data.urls[shortUrl]; ok {
+            data.lock.RUnlock()
             message = "cannot add '" + shortUrl + "': already exists."
         } else {
         // add url
-        urls[shortUrl] = redirect
+        data.lock.RUnlock()
+        data.lock.Lock()
+        data.urls[shortUrl] = redirect
+        data.lock.Unlock()
         message = "succesfully added url. /" + shortUrl + " now redirects to " + redirect
         }
     }
@@ -58,11 +72,16 @@ func del(ctx iris.Context) {
     var status int
     shortUrl := ctx.Params().Get("shortUrl")
     // delete url
-    if _, ok := urls[shortUrl]; ok {
-        delete(urls, shortUrl)
+    data.lock.RLock()
+    if _, ok := data.urls[shortUrl]; ok {
+        data.lock.RUnlock()
+        data.lock.Lock()
+        delete(data.urls, shortUrl)
+        data.lock.Unlock()
         message = "successfully deleted " + shortUrl
         status = 0
     } else {
+        data.lock.RUnlock()
         // failed to delete, short url doesnt exists
         message = "failed to delete '" +shortUrl +"': not found."
         status = 1
@@ -85,23 +104,28 @@ func update(ctx iris.Context) {
     shortUrl := ctx.Params().Get("shortUrl")
 
     // update short url
-    if _, ok := urls[shortUrl]; ok {
+    data.lock.RLock()
+    if _, ok := data.urls[shortUrl]; ok {
+        data.lock.RUnlock()
         newShortUrl := ctx.URLParam("shortUrl")
         newRedirect := ctx.URLParam("redirect")
 
         // change of key requires deleting old and creating new entry
+        data.lock.Lock()
         if newShortUrl != shortUrl {
-            delete(urls, shortUrl)
-            urls[newShortUrl] = newRedirect
+            delete(data.urls, shortUrl)
+            data.urls[newShortUrl] = newRedirect
         } else {
-            urls[shortUrl] = newRedirect
+            data.urls[shortUrl] = newRedirect
         }
+        data.lock.Unlock()
 
         // render success message to client
         message = "succesfully updated '"+shortUrl+"'. short url: "+newShortUrl
         message += " redirect url: " + newRedirect
         status = 0
     } else {
+        data.lock.RUnlock()
         // failed to update, short url doesnt exists
         message = "failed to update '" +shortUrl +"': not found."
         status = 1
@@ -117,9 +141,11 @@ return: json with all current data
 */
 func fetch(ctx iris.Context) {
     message := ""
-    for key, value := range urls {
+    data.lock.RLock()
+    for key, value := range data.urls {
         message += key + "=" + value + " "
     }
+    data.lock.RUnlock()
     status := 0
     // send response
     response := Response{Status: status, Data: message}
@@ -134,7 +160,8 @@ func get(ctx iris.Context) {
     var message string
     var status int
     shortUrl := ctx.Params().Get("shortUrl")
-    if redirect, ok := urls[shortUrl]; ok {
+    data.lock.RLock()
+    if redirect, ok := data.urls[shortUrl]; ok {
         message = redirect
         status = 0
     } else {
@@ -142,6 +169,7 @@ func get(ctx iris.Context) {
         message = shortUrl +" not found."
         status = 1
     }
+    data.lock.RUnlock()
     // send response
     response := Response{Status: status, Data: message}
     ctx.JSON(response)
@@ -158,8 +186,9 @@ func ping(ctx iris.Context) {
 
 func main() {
     //hardcode some initial data
-    urls["tandon"] = "https://engineering.nyu.edu/"
-    urls["classes"] = "https://classes.nyu.edu/"
+    data.urls = make(map[string]string)
+    data.urls["tandon"] = "https://engineering.nyu.edu/"
+    data.urls["classes"] = "https://classes.nyu.edu/"
     app := iris.New()
 
     // add all our routes
@@ -174,5 +203,11 @@ func main() {
     port := flag.String("port", "8000", "backend listening port")
     flag.Parse()
 
-    app.Listen(":"+*port)
+    // iris config
+    config := iris.WithConfiguration(iris.Configuration {
+        DisableStartupLog: true,
+    })
+    // start backend
+    fmt.Println("BACKEND listening on " + *port)
+    app.Listen(":"+*port, config)
 }

@@ -194,10 +194,7 @@ func redirect(ctx iris.Context) {
     shortUrl := ctx.Params().Get("shortUrl")
     response := getResponse(apiUrl, "/"+shortUrl)
     if response.Status == 0 {
-        // 307 response code stops redirects from being cached
-        // 301 allows redirect caching
-        // 301 would be better, 307 works better for demo'ing.
-        ctx.Redirect(response.Data, 307)
+        ctx.Redirect(response.Data, 301) // use 307 instead of 301 to avoid browser redirect caching
     } else {
         ctx.ViewData("message", response.Data)
         ctx.View("message.html")
@@ -211,19 +208,19 @@ backendAddr: backendAddr we want to ping
 pingPeriod: how often should backend be ping'd
 return: nothing, prints failure if no response from backend
 */
-func pingBackend(backendAddr string, pingPeriod int) {
+func pingBackend(backendAddr string, pingPeriod time.Duration) {
     for {
+        // sleep
+        time.Sleep(pingPeriod * time.Second)
+
         // ping
         response := getResponse(backendAddr, "/ping")
         if response.Status != 0 {
             timeNow := time.Now()
-            err := "Detected Faliure on " + backendAddr + "at "
-            err += timeNow.Format("2006-01-02 15:04:05 +0000") + " UTC"
+            err := "Detected Faliure on " + backendAddr + " at "
+            err += timeNow.Format("2006-01-02 15:04:05 2609") + " UTC"
             fmt.Println(err)
         }
-
-        // sleep
-        time.Sleep(pingPeriod * time.Second)
     }
 }
 
@@ -263,7 +260,12 @@ func main() {
     // check if backend is alive every 5 secconds
     go pingBackend(apiUrl, 5)
 
+    // iris config
+    config := iris.WithConfiguration(iris.Configuration {
+        DisableStartupLog: true,
+    })
+
     // start frontend
-    fmt.Print("Frontend: ")
-    app.Listen(":"+*port)
+    fmt.Println("FRONTEND listening on " + *port)
+    app.Listen(":"+*port, config)
 }
