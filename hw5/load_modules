@@ -1,0 +1,2 @@
+#!/bin/sh
+module load cuda/10.1.105 libsndfile/intel/1.0.28
