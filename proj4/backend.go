@@ -24,10 +24,10 @@ will then try to commit them:
     ask everyone else to precommit
     others will add the precomit, (num, command, commit stautus)
     and reply precomit ready
-    master will wait until quarum reached
+    master will wait until quorum reached
         keep trying nodes that never responded
             needs to keep track which nodes responded
-    once quarem will commit message
+    once quorum will commit message
     master has seperate thread that will deal with making last commit changes
     master replies to client commit made
     master tells all nodes to commit
@@ -72,17 +72,16 @@ var log = Log{}
 type Raft struct {
     state int // 0 = follower, 1 = candidate, 2 = leader
     stateLock sync.Mutex
-    term int
+    term int // current term
     termLock sync.Mutex
-    leader []string // [ leader, term ] 
+    leader []string // [ current leader, leader's term ] 
     leaderLock sync.Mutex
-    candidateTimer *time.Timer
-    votes map[string]string // key: vote_ip, item: ""
+    votes map[string]string // key: vote_ip, item: nil
     votesLock sync.Mutex
-    candidate string
+    candidate string // candidate we voted for this term
     candidateLock sync.Mutex
-    lastHeartbeat int64
-    heartbeatTimeout int
+    lastHeartbeat int64 // last heartbeat recieved
+    heartbeatTimeout int // how long we'll wait for a heartbeat
     heartbeatLock sync.Mutex
 }
 
@@ -334,7 +333,19 @@ func logHandler() {
 
 func raft_vote(ctx iris.Context) {
     voter := ctx.URLParam("voter")
-    fmt.Println("recieved vote from:", voter)
+    // if we're currently not a candidate, ignore the vote
+    raft.stateLock.Lock()
+    if raft.state != 1 {
+        raft.stateLock.Unlock()
+        response := Response{Status: 1, Data: "vote ignored"}
+        ctx.JSON(response)
+        return
+
+    }
+    raft.stateLock.Unlock()
+
+    //fmt.Println("recieved vote from:", voter) // DEBUG
+
     raft.votesLock.Lock()
     // if voter in raft.votes, then he hasn't voted for us
     // we then remove him to signify he voted for us
@@ -345,9 +356,9 @@ func raft_vote(ctx iris.Context) {
 }
 
 func raft_candidate(ctx iris.Context) {
-    // if leader ignor candidate request
+    // if leader ignore candidate request
     raft.stateLock.Lock()
-    if raft.state == 2 {
+    if raft.state == 2 || raft.state == 1 { // TODO IDK
         raft.stateLock.Unlock()
         response := Response{Status: 1, Data: "candidate rejected"}
         ctx.JSON(response)
@@ -358,7 +369,7 @@ func raft_candidate(ctx iris.Context) {
 
     candidate := ctx.URLParam("candidate")
     term := ctx.URLParam("term")
-    fmt.Println("recieved candidate req from:", candidate) // DEBUG
+    //fmt.Println("recieved candidate req from:", candidate) // DEBUG
 
     // vote for candidate again if same candidate
     // candidate might have never received our past votes
@@ -366,17 +377,14 @@ func raft_candidate(ctx iris.Context) {
     if raft.candidate == candidate {
         raft.candidateLock.Unlock()
         // send vote
-        fmt.Println("sent vote to:", candidate) // DEBUG
+        //fmt.Println("sent vote to:", candidate) // DEBUG
         portStr := strconv.Itoa(port)
         my_ip := "http://localhost" + ":" + portStr
         route := "/raft_vote" + "?voter=" + my_ip
         getResponse(candidate, route) // send vote, disregard response
 
         // reset election timout
-        raft.heartbeatLock.Lock()
-        raft.lastHeartbeat = int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
-        raft.heartbeatTimeout = rand.Intn(750-500) + 500 // randon int from range 500 to 750
-        raft.heartbeatLock.Unlock()
+        resetHeartbeat()
 
         response := Response{Status: 0, Data: ""}
         ctx.JSON(response)
@@ -409,10 +417,7 @@ func raft_candidate(ctx iris.Context) {
         raft.candidateLock.Unlock()
 
         // reset election timer after voting
-        raft.heartbeatLock.Lock()
-        raft.lastHeartbeat = int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
-        raft.heartbeatTimeout = rand.Intn(750-500) + 500 // randon int from range 500 to 750
-        raft.heartbeatLock.Unlock()
+        resetHeartbeat()
 
     } else {
         raft.termLock.Unlock()
@@ -421,166 +426,195 @@ func raft_candidate(ctx iris.Context) {
     ctx.JSON(response)
 }
 
-func raft_heartbeat(ctx iris.Context) {
-    leader := ctx.URLParam("leader")
-    term := ctx.URLParam("term")
-    fmt.Println("recieved heartbeat from:", leader, "term:", term)
+/*
+sets last heart beat to time now in milliseconds
+the new timeout will be between max and min, hardcoded currently
+(500 - 750 millisecond timeout) before follower becomes candidate
+*/
+func resetHeartbeat() {
+    max := 1000
+    min := 750
+    raft.heartbeatLock.Lock()
+    raft.lastHeartbeat = int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
+    raft.heartbeatTimeout = rand.Intn(max-min) + min // randon int from range min to max
+    raft.heartbeatLock.Unlock()
+}
 
-    leader_term, err := strconv.Atoi(term)
+/*
+endpoint for receieving heartbeats
+heartbeats will be used to determine who is the leader
+*/
+func raft_heartbeat(ctx iris.Context) {
+    new_leader := ctx.URLParam("leader")
+    new_leader_term_str := ctx.URLParam("term")
+    //fmt.Println("recieved heartbeat from:", leader, "term:", term) // DEBUG
+
+    new_leader_term, err := strconv.Atoi(new_leader_term_str)
     if err != nil {
         response := Response{Status: 1, Data: "invalid term"}
         ctx.JSON(response)
         return
     }
 
-    // recieved heartbeat from current leader
-    raft.leaderLock.Lock()
-    if raft.leader[0] == leader {
-        // set last heartbeat to unix time now in milliseconds
-        raft.lastHeartbeat = int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
-        response := Response{Status: 0, Data: ""}
-        ctx.JSON(response)
-        raft.leaderLock.Unlock()
-        return
-    }
-    raft.leaderLock.Unlock()
-
-
     // check if leader with higher term sending heartbeat
-    raft.termLock.Lock()
-    if leader_term > raft.term {
+    raft.leaderLock.Lock()
+    old_leader := raft.leader[0] // used later more efficient to grab now
+    old_leader_termStr := raft.leader[1]
+    raft.leaderLock.Unlock()
+    old_leader_term, _ := strconv.Atoi(old_leader_termStr)
+
+    if new_leader_term > old_leader_term {
 
         // update term
-        raft.term = leader_term
+        raft.termLock.Lock()
+        raft.term = new_leader_term
         raft.termLock.Unlock()
 
         // update leader
         raft.leaderLock.Lock()
-        raft.leader[0] = leader
-        raft.leader[1] = term
+        raft.leader[0] = new_leader
+        raft.leader[1] = new_leader_term_str
         raft.leaderLock.Unlock()
+        fmt.Println("new leader:", new_leader, "term:", new_leader_term) // DEBUG
 
         // set last heartbeat to time now in unix milliseconds
-        raft.heartbeatLock.Lock()
-        raft.lastHeartbeat = int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
-        raft.heartbeatTimeout = rand.Intn(750-500) + 500 // randon int from range 500 to 750
-        raft.heartbeatLock.Unlock()
+        resetHeartbeat()
         // make sure we're follower
         raft.stateLock.Lock()
         raft.state = 0
         raft.stateLock.Unlock()
 
-    } else {
+    } else if old_leader == new_leader {
+    // recieved heartbeat from current leader
+        // make sure our term to matches leaders
+        raft.termLock.Lock()
+        raft.term = new_leader_term
         raft.termLock.Unlock()
+        fmt.Println("current leader:", new_leader, "term:", new_leader_term) // DEBUG
+
+        // set last heartbeat to unix time now in milliseconds
+        resetHeartbeat()
     }
+
     response := Response{Status: 0, Data: ""}
     ctx.JSON(response)
 
 }
 
-func raftNode() {
-    // set up for timeout
-    raft.heartbeatLock.Lock()
-    raft.lastHeartbeat = int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
-    raft.heartbeatTimeout = rand.Intn(750-500) + 500 // randon int from range 500 to 750
-    raft.heartbeatLock.Unlock()
+func raftFollower() int {
+    state := 0
 
-    // raft node loop
-    for {
+    // while follower
+    for state == 0 {
+        // check if haven't recieved heartbeat within timeout
+        timenow := int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
+        raft.heartbeatLock.Lock()
+        if (timenow - raft.lastHeartbeat > int64(raft.heartbeatTimeout)) {
+            raft.heartbeatLock.Unlock()
+            // become candidate
+            raft.stateLock.Lock()
+            raft.state = 1
+            raft.stateLock.Unlock()
+            return 1
+        }
+        raft.heartbeatLock.Unlock()
+
+        // short sleep so we don't hoard the state lock
+        time.Sleep(50 * time.Millisecond)
+
+        // check if we're still follower
         raft.stateLock.Lock()
-        switch raft.state {
-            case 0: // follower
-                fmt.Println("I AM FOLLOWER") // DEBUG
-                raft.stateLock.Unlock()
+        state = raft.state
+        raft.stateLock.Unlock()
+    }
 
-                // short sleep so we don't hoard the state lock
-                time.Sleep(10 * time.Millisecond)
+    return state
+}
 
-                // check if haven't recieved heartbeat within timeout
-                timenow := int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
-                raft.heartbeatLock.Lock()
-                if (timenow - raft.lastHeartbeat > int64(raft.heartbeatTimeout)) {
-                raft.heartbeatLock.Unlock()
-                    // become candidate
-                    raft.stateLock.Lock()
-                    raft.state = 1
-                    raft.stateLock.Unlock()
-                } else {
-                    raft.heartbeatLock.Unlock()
-                }
+func raftCandidateSetup() (int, int, int64) {
+    // just became candidate thus
+    // increment term
+    raft.termLock.Lock()
+    raft.term += 1
+    term := raft.term // save our current term as candidate
+    raft.termLock.Unlock()
 
-            case 1: // candidate
-                fmt.Println("I AM CANDIDATE") // DEBUG
-                raft.stateLock.Unlock()
+    // reset votes
+    raft.votesLock.Lock()
+    for _, raft_node := range backends {
+        raft.votes[raft_node] = ""
+    }
+    raft.votesLock.Unlock()
 
-                // just became candidate thus
-                // increment term
-                raft.termLock.Lock()
-                raft.term += 1
-                term := raft.term // save our current term as candidate
-                raft.termLock.Unlock()
+    // set candidate timeout
+    timeout := rand.Intn(750-500) + 500 // randon int from range 750 to 500
+    // set timestamp of we became candidate
+    candidateTimestamp := int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
+    return term, timeout, candidateTimestamp
 
-                // reset votes
-                raft.votesLock.Lock()
-                for _, raft_node := range backends {
-                    raft.votes[raft_node] = ""
-                }
-                raft.votesLock.Unlock()
+}
 
-                // start candidate timeout
-                candidateTimeout := rand.Intn(750-500) + 500 // randon int from range 150 to 300
-                raft.candidateTimer = time.NewTimer(time.Duration(candidateTimeout) * time.Millisecond)
+func raftCandidate() int {
+    term, timeout, candidateTimestamp := raftCandidateSetup()
 
-                // while candidate, send candidate vote reqs
-                raft.stateLock.Lock()
-                state := raft.state
-                raft.stateLock.Unlock()
-                for state == 1 {
-                    select {
-                        case <-raft.candidateTimer.C:
-                            // if timeout become follower
-                            // reset timer
-                            raft.heartbeatLock.Lock()
-                            raft.lastHeartbeat = int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
-                            raft.heartbeatTimeout = rand.Intn(750-500) + 500 // randon int from range 500 to 750
-                            raft.heartbeatLock.Unlock()
-                            // change state
-                            raft.stateLock.Lock()
-                            raft.state = 0
-                            raft.stateLock.Unlock()
+    state := 1
 
-                        default:
-                            // send candidate reqs to all nodes
-                            for _, raft_node := range backends {
-                                // TODO my ip
-                                my_ip := "http://localhost" + ":" + strconv.Itoa(port)
-                                route := "/raft_candidate?candidate=" + my_ip + "&term=" + strconv.Itoa(term)
-                                getResponse(raft_node, route) // send candidate req, disregard response
-                            }
+    // while candidate
+    for state == 1 {
+        // if timeout become follower
+        timenow := int64(time.Nanosecond) * time.Now().UnixNano() / int64(time.Millisecond)
+        if (timenow - candidateTimestamp > int64(timeout) ) {
+            // reset timer
+            resetHeartbeat()
+            // change state
+            raft.stateLock.Lock()
+            raft.state = 0
+            raft.stateLock.Unlock()
+            return 0
+        }
 
-                            // check if recieved quarem of votes
-                            raft.votesLock.Lock()
-                            votes := len(backends) + 1 - len(raft.votes)
-                            raft.votesLock.Unlock()
-                            if votes > (len(backends) + 1)/2 {
-                                // become leader
-                                raft.stateLock.Lock()
-                                raft.state = 2
-                                raft.stateLock.Unlock()
-                                raft.leaderLock.Lock()
-                                raft.leader[0] = ""
-                                raft.leader[1] = "-1"
-                                raft.leaderLock.Unlock()
-                            }
-                    }
-                    // check if we're still candidate
-                    raft.stateLock.Lock()
-                    state = raft.state
-                    raft.stateLock.Unlock()
-                }
-            case 2: // leader
-                fmt.Println("I AM LEADER") // DEBUG
-                raft.stateLock.Unlock()
+        // send candidate reqs to all nodes
+        for _, raft_node := range backends {
+            // TODO my ip
+            my_ip := "http://localhost" + ":" + strconv.Itoa(port)
+            route := "/raft_candidate?candidate=" + my_ip + "&term=" + strconv.Itoa(term)
+            getResponse(raft_node, route) // send candidate req, disregard response
+        }
+
+        // check if recieved quorum of votes
+        raft.votesLock.Lock()
+        votes := len(backends) + 1 - len(raft.votes)
+        raft.votesLock.Unlock()
+
+        // if quorum become leader
+        if votes > (len(backends) + 1)/2 {
+            raft.stateLock.Lock()
+            raft.state = 2
+            raft.stateLock.Unlock()
+            raft.leaderLock.Lock()
+            raft.leader[0] = ""
+            raft.leader[1] = "-1"
+            raft.leaderLock.Unlock()
+        }
+
+        // check if we're still candidate
+        raft.stateLock.Lock()
+        state = raft.state
+        raft.stateLock.Unlock()
+    }
+    return state
+}
+
+func raftLeader() int {
+    state := 2
+
+    // start heartbeat timer
+    heartbeatTimer := time.NewTimer(50 * time.Millisecond)
+
+    for state == 2 {
+        select {
+            case <-heartbeatTimer.C:
+                // send heartbeat when timer finishes
                 raft.termLock.Lock()
                 term := raft.term
                 raft.termLock.Unlock()
@@ -591,8 +625,49 @@ func raftNode() {
                     route := "/raft_heartbeat" + "?leader=" + my_ip + "&term=" + strconv.Itoa(term)
                     getResponse(raft_node, route) // send heart beat, disregard response
                 }
-                heartbeatPeriod := 50 // send heartbeat every 50 milliseconds
-                time.Sleep(time.Duration(heartbeatPeriod) * time.Millisecond)
+
+                // reset timer
+                heartbeatTimer = time.NewTimer(50 * time.Millisecond)
+            default:
+                // short sleep better than burning cpu cycles
+                time.Sleep(10 * time.Millisecond)
+        }
+
+        // check if we're still leader
+        raft.stateLock.Lock()
+        state = raft.state
+        raft.stateLock.Unlock()
+    }
+    return state
+}
+
+func raftNode() {
+    // get inital state
+    // should always start as follower
+    raft.stateLock.Lock()
+    state := raft.state
+    raft.stateLock.Unlock()
+
+    // set up for timeout
+    resetHeartbeat()
+
+    for {
+        switch state {
+            case 0: // follower
+                fmt.Println("I AM FOLLOWER, leader:", raft.leader[0]) // DEBUG
+
+                state = raftFollower()
+
+            case 1: // candidate
+                fmt.Println("I AM CANDIDATE") // DEBUG
+
+                state = raftCandidate()
+
+            case 2: // leader
+                fmt.Println("I AM LEADER, term :", raft.term) // DEBUG
+
+                state = raftLeader()
+
         }
     }
 }
