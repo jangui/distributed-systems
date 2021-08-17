@@ -9,6 +9,7 @@ import (
     "flag"
     "fmt"
     "time"
+    "sync"
 )
 
 // response struct used to decode json from backend
@@ -18,7 +19,12 @@ type Response struct {
 }
 
 // global var used to save backend addresses
-var backends string[]
+var backends []string
+
+// global var used for communicating with leader
+var leader string
+
+var leaderLock sync.Mutex
 
 /*
 function used for putting json data from backend into map
@@ -43,13 +49,13 @@ func processResponse(response string) map[string]string {
 }
 
 /*
-gets response from backend for given route
-backend: address of backend (e.g. http://localhost:8080)
-route: route that gets hit on backend
-return: response from backend or error
+gets response from host for given route
+host: address of host to make request (e.g. http://localhost:8080)
+route: route that gets hit on host
+return: response from host or error
 */
-func getResponse(backend string, route string) Response {
-    resp, err := http.Get(backend+route)
+func getResponse(host string, route string) Response {
+    resp, err := http.Get(host+route)
     if err != nil {
         return Response{Status: 1, Data: err.Error()}
     }
@@ -72,7 +78,20 @@ returns: current short urls and mapped redirect url
          form to add new short url
 */
 func index(ctx iris.Context) {
-    response := getResponse(backendUrl, "/fetch")
+    if leader == "" {
+        getLeader()
+    }
+    response := getResponse(leader, "/fetch")
+
+    // if status == 2 then we asked and old or invalid leader
+    // find new leader and remake request
+    for response.Status == 2 {
+        getLeader()
+        response = getResponse(leader, "/fetch")
+
+    }
+
+    // error getting resoponse
     if response.Status != 0 {
         ctx.ViewData("message", response.Data)
         ctx.View("message.html")
@@ -105,7 +124,16 @@ func add(ctx iris.Context) {
     }
 
     route := "/add?shortUrl=" + shortUrl + "&redirect=" + redirect
-    response := getResponse(backendUrl, route)
+    response := getResponse(leader, route)
+
+    // if status == 2 then we asked and old or invalid leader
+    // find new leader and remake request
+    for response.Status == 2 {
+        getLeader()
+        response = getResponse(leader, route)
+
+    }
+
     ctx.ViewData("message", response.Data)
     ctx.View("message.html")
 }
@@ -118,7 +146,16 @@ return: renders success or fail message
 func del(ctx iris.Context) {
     shortUrl := ctx.Params().Get("shortUrl")
     route := "/delete/" + shortUrl
-    response := getResponse(backendUrl, route)
+    response := getResponse(leader, route)
+
+    // if status == 2 then we asked and old or invalid leader
+    // find new leader and remake request
+    for response.Status == 2 {
+        getLeader()
+        response = getResponse(leader, route)
+
+    }
+
     ctx.ViewData("message", response.Data)
     ctx.View("message.html")
 }
@@ -129,7 +166,15 @@ return: renders edit html containing form to update info or error message
 */
 func edit(ctx iris.Context) {
     shortUrl := ctx.Params().Get("shortUrl")
-    response := getResponse(backendUrl, "/"+shortUrl)
+    response := getResponse(leader, "/"+shortUrl)
+
+    // if status == 2 then we asked and old or invalid leader
+    // find new leader and remake request
+    for response.Status == 2 {
+        getLeader()
+        response = getResponse(leader, "/" + shortUrl)
+
+    }
 
     if response.Status == 0 {
         // render edit template
@@ -179,7 +224,15 @@ func update(ctx iris.Context) {
     }
 
     route := "/update/"+shortUrl+"?shortUrl="+newShortUrl+"&redirect="+newRedirect
-    response := getResponse(backendUrl, route)
+    response := getResponse(leader, route)
+
+    // if status == 2 then we asked and old or invalid leader
+    // find new leader and remake request
+    for response.Status == 2 {
+        getLeader()
+        response = getResponse(leader, route)
+
+    }
 
     ctx.ViewData("message", response.Data)
     ctx.View("message.html")
@@ -192,7 +245,7 @@ used for redirecting
 */
 func redirect(ctx iris.Context) {
     shortUrl := ctx.Params().Get("shortUrl")
-    response := getResponse(backendUrl, "/"+shortUrl)
+    response := getResponse(leader, "/"+shortUrl)
     if response.Status == 0 {
         ctx.Redirect(response.Data, 301) // use 307 instead of 301 to avoid browser redirect caching
     } else {
@@ -202,25 +255,50 @@ func redirect(ctx iris.Context) {
 }
 
 /*
-function used to check if backend is alive
+function used to check if backends are alive
 this function should be run in its own thread
-backendAddr: backendAddr we want to ping
 pingPeriod: how often should backend be ping'd
-return: nothing, prints failure if no response from backend
+return: nothing, prints failure if no response any backend
 */
-func pingBackend(backendAddr string, pingPeriod time.Duration) {
+func pingBackends(pingPeriod time.Duration) {
     for {
         // sleep
         time.Sleep(pingPeriod * time.Second)
 
         // ping
-        response := getResponse(backendAddr, "/ping")
-        if response.Status != 0 {
-            timeNow := time.Now()
-            err := "Detected Faliure on " + backendAddr + " at "
-            err += timeNow.Format("2006-01-02 15:04:05 2609") + " UTC"
-            fmt.Println(err)
+        for _, backend := range backends {
+            response := getResponse(backend, "/ping")
+
+            // successful ping
+            if response.Status == 0 {
+                timeNow := time.Now()
+                err := "Detected Faliure on " + backend + " at "
+                err += timeNow.Format("2006-01-02 15:04:05 2609") + " UTC"
+                fmt.Println(err)
+            }
         }
+    }
+}
+
+/*
+function used for getting leader
+*/
+func getLeader() {
+    // loop until leader received 
+    for {
+        // ask all backends
+        for _, backend := range backends {
+            response := getResponse(backend, "/get_leader")
+
+            // successful response
+            if response.Status == 0 {
+                leaderLock.Lock()
+                leader = response.Data
+                leaderLock.Unlock()
+            }
+        }
+        // sleep half a second before trying all backends again
+        time.Sleep(500 * time.Millisecond)
     }
 }
 
@@ -232,6 +310,8 @@ func main() {
     app := iris.New()
 
     tmpl := iris.HTML("./views", ".html")
+
+    leader = ""
 
     // Enable re-build on local template files changes.
     //tmpl.Reload(true)
